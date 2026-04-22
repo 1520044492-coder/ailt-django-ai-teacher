@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AILT Classroom</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col items-center justify-center">
+
+    <div id="lobby-container" class="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
+        <h1 class="text-3xl font-bold mb-6 text-blue-600">AILT Login</h1>
+        
+        {% if current_session %}
+            <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-6 rounded text-left">
+                <h2 class="font-bold text-lg">Grade {{ current_session.year }} Class {{ current_session.class_number }}</h2>
+                <h3 class="font-bold text-lg">{{ lesson.title }}</h3>
+            </div>
+
+            <div class="mb-6 text-left">
+                <label class="block text-gray-700 text-sm font-bold mb-2">① Select Your Name:</label>
+                <select id="student-select" class="shadow border rounded w-full py-2 px-3 text-gray-700 focus:outline-none focus:shadow-outline">
+                    <option value="">-- Click Here --</option>
+                    {% for student in students %}
+                        <option value="{{ student.id }}">{{ student.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            
+            <button id="start-lesson-btn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded shadow transition transform hover:scale-105">
+                ② Chat with AILT
+            </button>
+        {% else %}
+            <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded">
+                <p class="font-bold">No Active Class!</p>
+                <p>Please wait for the teacher to start the session in the Admin panel.</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <div id="classroom-container" class="hidden bg-white p-8 rounded-lg shadow-lg w-full max-w-2xl text-center">
+        <h1 class="text-3xl font-bold mb-6 text-blue-600">AILT Classroom</h1>
+        
+        <div class="relative w-64 h-64 mx-auto mb-6 rounded-full overflow-hidden shadow-2xl border-4 border-blue-500 bg-black">
+            <video id="d-id-video" class="w-full h-full object-cover" autoplay playsinline></video>
+        </div>
+        <button id="connect-btn" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded mb-6 transition">
+            Wake up AILT Avatar
+        </button>
+
+        <div id="chat-log" class="text-left h-48 overflow-y-auto mb-6 p-4 bg-gray-50 border rounded">
+            <p class="text-gray-400 italic">Conversation will appear here...</p>
+        </div>
+
+        <div class="flex flex-col gap-4 items-center w-full mt-4">
+            
+            <div class="flex w-full gap-2">
+                <input type="text" id="chat-input" placeholder="Type your message here..." class="flex-1 border-2 border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500 shadow-sm text-gray-800">
+                <button id="send-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg shadow transition">
+                    Send
+                </button>
+            </div>
+            
+            <div class="text-gray-400 text-sm font-bold">- OR -</div>
+
+            <button id="mic-btn" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-full shadow-lg transition transform hover:scale-105 w-full">
+                🎤 Hold to Speak
+            </button>
+            <p id="status" class="text-sm text-gray-500">Ready</p>
+            
+        </div>
+    </div>
+
+    <script>
+        // --- 1. UI SWITCHING LOGIC ---
+        const lobbyContainer = document.getElementById('lobby-container');
+        const classroomContainer = document.getElementById('classroom-container');
+        const startLessonBtn = document.getElementById('start-lesson-btn');
+        
+        let currentStudentId = null;
+        let currentLessonId = {% if lesson %}{{ lesson.id }}{% else %}null{% endif %}; 
+        let chatHistory = [];
+
+        if (startLessonBtn) {
+            startLessonBtn.addEventListener('click', () => {
+                const studentSelect = document.getElementById('student-select');
+                if (!studentSelect.value) {
+                    alert("Please select your name first!");
+                    return;
+                }
+                
+                // value from login dropdown box
+                currentStudentId = studentSelect.value;
+                lobbyContainer.classList.add('hidden');
+                classroomContainer.classList.remove('hidden');
+            });
+        }
+
+        // --- 2. D-ID WebRTC CONNECTION PIPELINE ---
+        const didApiKey = "{{ did_key }}"; 
+        const videoElement = document.getElementById('d-id-video');
+        const connectBtn = document.getElementById('connect-btn');
+        
+        let peerConnection;
+        let streamId;
+        let sessionId;
+
+        connectBtn.addEventListener('click', async () => {
+            connectBtn.innerText = "Connecting...";
+            connectBtn.disabled = true;
+
+            const streamResponse = await fetch('https://api.d-id.com/talks/streams', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Basic ${btoa(didApiKey)}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    source_url: "https://raw.githubusercontent.com/ThomasCodinginEnglish/myphoto/main/myface.jpeg"
+                })
+            });
+            
+            if (!streamResponse.ok) {
+                const errorDetails = await streamResponse.json();
+                console.error("D-ID REJECTED THE REQUEST. Reason:", errorDetails);
+                connectBtn.innerText = "Connection Failed";
+                return; 
+            }
+
+            const streamData = await streamResponse.json();
+            streamId = streamData.id;
+            sessionId = streamData.session_id;
+
+            peerConnection = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+            
+            peerConnection.ontrack = (event) => {
+                if (videoElement.srcObject !== event.streams[0]) {
+                    videoElement.srcObject = event.streams[0];
+                    setTimeout(() => {
+                        videoElement.play().catch(e => console.log("Browser waiting for user click."));
+                    }, 500);
+                }
+            };
+
+            peerConnection.onicecandidate = async (event) => {
+                if (event.candidate) {
+                    await fetch(`https://api.d-id.com/talks/streams/${streamId}/ice`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Basic ${btoa(didApiKey)}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex,
+                            session_id: sessionId
+                        })
+                    });
+                }
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(streamData.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+
+            await fetch(`https://api.d-id.com/talks/streams/${streamId}/sdp`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Basic ${btoa(didApiKey)}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    answer: answer,
+                    session_id: sessionId
+                })
+            });
+
+            connectBtn.innerText = "Avatar Connected!";
+            connectBtn.classList.replace('bg-green-500', 'bg-gray-500');
+        });
+
+        // --- 3. MICROPHONE LOGIC ---
+        const micBtn = document.getElementById('mic-btn');
+        const statusText = document.getElementById('status');
+        const chatLog = document.getElementById('chat-log');
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'en-US'; 
+        recognition.interimResults = false;
+
+        micBtn.addEventListener('mousedown', () => {
+            recognition.start();
+            statusText.innerText = "Listening...";
+            micBtn.classList.replace('bg-blue-500', 'bg-red-500');
+        });
+
+        recognition.addEventListener('result', (event) => {
+            const transcript = event.results[0][0].transcript;
+            statusText.innerText = "Thinking...";
+            micBtn.classList.replace('bg-red-500', 'bg-blue-500');
+            
+            chatLog.innerHTML += `<p class="mb-2"><b>You:</b> ${transcript}</p>`;
+            chatLog.scrollTop = chatLog.scrollHeight;
+            sendToDjango(transcript);
+        });
+
+        // --- 4. TEXT INPUT LOGIC ---
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        function handleTextInput() {
+            const text = chatInput.value.trim();
+            if (text === "") return; // If it's empty, stop and do nothing.
+            
+            statusText.innerText = "Thinking...";
+            
+            // Injects "You: I like dogs" into the chat history on screen
+            chatLog.innerHTML += `<p class="mb-2"><b>You:</b> ${text}</p>`;
+            chatLog.scrollTop = chatLog.scrollHeight;
+            
+            // Empties the input box
+            chatInput.value = ''; 
+            
+            // Passes text to the next function
+            sendToDjango(text); 
+        }
+
+        // Listens for a mouse click on the Send button
+        sendBtn.addEventListener('click', handleTextInput);
+
+        // Listens for the "Enter" key on the keyboard
+        chatInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                handleTextInput();
+            }
+        });
+
+        // --- 5. SEND TO DJANGO & AUDIO PLAYBACK ---
+        async function sendToDjango(message) {
+            // .push adds the new message to chatHistory
+            chatHistory.push({ role: "Student", text: message });
+
+            const response = await fetch('/classroom/api/chat/', {
+                method: 'POST',                     // HTTP POST Request to views.py chat_with_ailt() line 39
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({              // in Python: json.dumps()
+                    student_id: currentStudentId,   // from dropdown
+                    lesson_id: currentLessonId,     // from Django
+                    message: message,               // typed text
+                    history: chatHistory            // conversation history
+                })
+            });
+            
+            const data = await response.json();     // unpack response from views.py chat_with_ailt() line 119
+            
+
+            chatHistory.push({ role: "AILT", text: data.reply });
+            
+            chatLog.innerHTML += `<p class="mb-2 text-blue-600"><b>AILT:</b> ${data.reply}</p>`;
+            chatLog.scrollTop = chatLog.scrollHeight;
+            statusText.innerText = "Ready";
+
+            if (streamId && sessionId) {
+                await fetch(`https://api.d-id.com/talks/streams/${streamId}`, {     // direct HTTP POST request
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${btoa(didApiKey)}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        script: {
+                            type: "text",
+                            input: data.reply,
+                            provider: { type: "microsoft", voice_id: "en-GB-ThomasNeural" } 
+                        },
+                        session_id: sessionId
+                    })
+                });
+            } else {
+                const fallbackAudio = new SpeechSynthesisUtterance(data.reply);
+                const voices = window.speechSynthesis.getVoices();
+                const perfectBritishVoice = voices.find(voice => voice.name === 'Google UK English Male');
+
+                if (perfectBritishVoice) {
+                    fallbackAudio.voice = perfectBritishVoice;
+                } else {
+                    fallbackAudio.lang = 'en-GB'; 
+                }
+                
+                window.speechSynthesis.speak(fallbackAudio);     // browser API command, and fetch()
+            }
+        }
+    </script>
+</body>
+</html>

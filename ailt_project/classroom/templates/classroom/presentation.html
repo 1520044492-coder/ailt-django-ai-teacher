@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AILT Presentation Mode</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 h-screen flex flex-col overflow-hidden">
+
+    <div class="bg-indigo-900 text-white p-4 shadow-md flex justify-between items-center z-10">
+        <h1 class="text-3xl font-bold tracking-wider">AILT <span class="text-indigo-300 font-light">| Presentation Mode</span></h1>
+        
+        <div class="flex items-center gap-4">
+            <p id="status" class="text-indigo-200 font-mono text-sm mr-2">System Idle</p>
+            
+            <button id="mic-btn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded-full shadow transition flex items-center gap-2">
+                <span>🎤</span> Hold to Speak (JTE)
+            </button>
+            
+            <button id="connect-btn" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-6 rounded-full transition">
+                Connect Avatar
+            </button>
+        </div>
+    </div>
+
+    <div class="flex-1 flex flex-col bg-black overflow-hidden">
+        
+        <div class="flex-1 flex justify-center items-center overflow-hidden">
+            <video id="d-id-video" class="h-full w-full object-contain" autoplay playsinline></video>
+        </div>
+        
+        <div class="h-20 bg-black flex justify-center items-center px-8 border-t border-gray-800">
+            <p id="subtitle-text" class="text-4xl text-white font-bold text-center truncate w-full tracking-wide drop-shadow-lg">
+                Ready for class.
+            </p>
+        </div>
+
+    </div>
+
+    <script>
+        const didApiKey = "{{ did_key }}"; 
+        const videoElement = document.getElementById('d-id-video');
+        const connectBtn = document.getElementById('connect-btn');
+        let streamId;
+        let sessionId;
+        let chatHistory = [];
+
+        // --- D-ID CONNECTION ---
+        connectBtn.addEventListener('click', async () => {
+            connectBtn.innerText = "Connecting...";
+            const streamResponse = await fetch('https://api.d-id.com/talks/streams', {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${btoa(didApiKey)}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_url: "https://raw.githubusercontent.com/ThomasCodinginEnglish/myphoto/main/myface.jpeg" })
+            });
+            const streamData = await streamResponse.json();
+            streamId = streamData.id;
+            sessionId = streamData.session_id;
+
+            let peerConnection = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+            peerConnection.ontrack = (event) => { videoElement.srcObject = event.streams[0]; videoElement.play(); };
+            peerConnection.onicecandidate = async (event) => {
+                if (event.candidate) {
+                    await fetch(`https://api.d-id.com/talks/streams/${streamId}/ice`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Basic ${btoa(didApiKey)}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid, sdpMLineIndex: event.candidate.sdpMLineIndex, session_id: sessionId })
+                    });
+                }
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(streamData.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            await fetch(`https://api.d-id.com/talks/streams/${streamId}/sdp`, {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${btoa(didApiKey)}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answer: answer, session_id: sessionId })
+            });
+            connectBtn.innerText = "Connected";
+            connectBtn.classList.replace('bg-indigo-500', 'bg-green-600');
+        });
+
+        // --- MICROPHONE LOGIC ---
+        const micBtn = document.getElementById('mic-btn');
+        const statusText = document.getElementById('status');
+        const subtitleText = document.getElementById('subtitle-text');
+        
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'en-US'; 
+
+        micBtn.addEventListener('mousedown', () => {
+            recognition.start();
+            statusText.innerText = "Listening...";
+            subtitleText.innerText = "Listening...";
+            // Keep styling consistent for listening state
+            subtitleText.className = "text-3xl text-gray-400 italic text-center truncate w-full";
+        });
+
+        recognition.addEventListener('result', (event) => {
+            const transcript = event.results[0][0].transcript;
+            statusText.innerText = "Processing...";
+            subtitleText.innerText = `JTE: ${transcript}`;
+            // Keep styling consistent for JTE speaking
+            subtitleText.className = "text-4xl text-white font-bold text-center truncate w-full tracking-wide drop-shadow-lg";
+            sendToDjango(transcript);
+        });
+
+        // --- SEND TO DJANGO ---
+        async function sendToDjango(message) {
+            chatHistory.push({ role: "Teacher", text: message });
+
+            const response = await fetch('/classroom/api/presentation-chat/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message, history: chatHistory })
+            });
+            
+            const data = await response.json();
+            chatHistory.push({ role: "AILT", text: data.reply });
+            
+            subtitleText.innerText = data.reply;
+            // Update class to ensure it stays white and single-line (truncate)
+            subtitleText.className = "text-4xl text-white font-bold text-center truncate w-full tracking-wide drop-shadow-lg";
+            statusText.innerText = "System Idle";
+
+            if (streamId && sessionId) {
+                await fetch(`https://api.d-id.com/talks/streams/${streamId}`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Basic ${btoa(didApiKey)}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        script: { type: "text", input: data.reply, provider: { type: "microsoft", voice_id: "en-GB-ThomasNeural" } },
+                        session_id: sessionId
+                    })
+                });
+            } else {
+                const fallbackAudio = new SpeechSynthesisUtterance(data.reply);
+                const voices = window.speechSynthesis.getVoices();
+                const perfectBritishVoice = voices.find(voice => voice.name === 'Google UK English Male');
+                if (perfectBritishVoice) fallbackAudio.voice = perfectBritishVoice;
+                else fallbackAudio.lang = 'en-GB';
+                window.speechSynthesis.speak(fallbackAudio);
+            }
+        }
+    </script>
+</body>
+</html>
